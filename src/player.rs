@@ -1,26 +1,20 @@
 extern crate gstreamer as gst;
 extern crate gstreamer_app as gst_app;
+extern crate gstreamer_player as gst_player;
 extern crate glib;
 use self::glib::*;
-use self::gst::{ElementExt, GstObjectExt, PadExt};
 
 use std::u64;
-use std::thread;
+
 use std::sync::Arc;
 use std::sync::Mutex;
 
 #[derive(Debug, Clone)]
-pub struct Metadata {
-    width: i32,
-    height: i32,
-}
-
-#[derive(Debug, Clone)]
 struct PlayerInner {
-    playbin: gst::Element,
+    player: gst_player::Player,
     appsrc: Option<gst_app::AppSrc>,
     eos_reached: bool,
-    metadata: Option<Metadata>,
+    input_size: u64,
 }
 
 #[derive(Debug)]
@@ -28,187 +22,140 @@ pub struct Player {
     inner: Arc<Mutex<PlayerInner>>,
 }
 
-
 impl PlayerInner {
+    pub fn set_input_size(&mut self, size: u64) {
+        self.input_size = size;
+    }
+
     pub fn handle_eos(&mut self) {
-        println!("EOS!");
         self.eos_reached = true;
     }
 
+    pub fn play(&mut self) {
+        self.player.play();
+    }
+
     pub fn stop(&mut self) {
-        println!("Stop!");
-        self.playbin.set_state(gst::State::Null);
+        self.player.stop();
     }
 
-    pub fn get_metadata(&mut self) -> Option<Metadata> {
-        // FIXME: hopefully a copy can be avoided here
-        if let Some(m) = self.clone().metadata {
-            Some(Metadata {
-                width: m.width,
-                height: m.height,
-            })
-        } else {
-            None
-        }
+    pub fn start(&mut self) {
+        self.player.pause();
     }
 
-    pub fn check_video_dimensions(&mut self, caps: gst::GstRc<gst::CapsRef>) {
-        println!("caps {:?}", caps.to_string());
-        // TODO: Switch this to GstVideoInfo
-        if let Some(s) = caps.get_structure(0) {
-            // FIXME: apply PAR
-            let width = s.get::<i32>("width").unwrap();
-            let height = s.get::<i32>("height").unwrap();
-            self.metadata = Some(Metadata {
-                width: width,
-                height: height,
-            });
-        }
-
+    pub fn set_app_src(&mut self, appsrc: gst_app::AppSrc) {
+        self.appsrc = Some(appsrc);
     }
 
-    pub fn check_metadata(&mut self) {
-        let video_sink = self.playbin
-            .get_property("video-sink")
-            .unwrap()
-            .downcast::<gst::Element>()
-            .unwrap()
-            .get()
-            .unwrap();
-        if let Some(pad) = video_sink.get_static_pad("sink") {
-            if let Some(caps) = pad.get_current_caps() {
-                self.check_video_dimensions(caps);
-            } else {
-                // FIXME
-                // pad.connect("notify::caps", true, move |caps| {
-                //     self.check_video_dimensions(caps.get().unwrap());
-                //     None
-                // });
-            }
-
-        }
+    pub fn get_metadata(&mut self) -> Option<gst_player::PlayerMediaInfo> {
+        self.player.get_media_info()
     }
 }
 
+
 impl Player {
     pub fn new() -> Player {
+        let player = gst_player::Player::new(None, None);
+        player
+            .set_property("uri", &Value::from("appsrc://"))
+            .expect("Can't set uri property");
+
         // FIXME: glimagesink can't be used because:
         // 1. test-player isn't a Cocoa app running a NSApplication
         // 2. the GstGLDisplayCocoa depends on a main GLib loop in that case ^^ which test-player isn't using
-        let playbin = gst::parse_launch(
-            "playbin uri=appsrc:// video-sink=osxvideosink audio-sink=autoaudiosink",
-        ).unwrap();
-        // let playbin = gst::ElementFactory::make("playbin", None).unwrap();
-        // playbin
-        //     .set_property("uri", &Value::from("appsrc://"))
-        //     .unwrap();
+        let pipeline = player.get_pipeline().unwrap();
+        if let Some(sink) = gst::ElementFactory::make("osxvideosink", None) {
+            pipeline
+                .set_property("video-sink", &sink.to_value())
+                .expect("Can't set video sink property");
+        }
 
         Player {
             inner: Arc::new(Mutex::new(PlayerInner {
-                playbin: playbin,
+                player: player,
                 appsrc: None,
                 eos_reached: false,
-                metadata: None,
+                input_size: 0,
             })),
         }
     }
 
+    pub fn set_input_size(&mut self, size: u64) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.set_input_size(size);
+        }
+    }
+
     pub fn start(&mut self) {
-        // let self_clone = self.clone();
-        // let source_handler_id = self.playbin.connect("notify::source", true, move |_| {
-        //     let source = self_clone
-        //         .playbin
-        //         .get_property("source")
-        //         .unwrap()
-        //         .downcast::<gst::Element>()
-        //         .unwrap()
-        //         .get()
-        //         .unwrap();
-        //     let appsrc = source
-        //         .clone()
-        //         .dynamic_cast::<gst_app::AppSrc>()
-        //         .expect("Source element is expected to be an appsrc!");
-
-        //     println!("Got source: {:?}", appsrc);
-        //     appsrc.set_property_format(gst::Format::Bytes);
-        //     self_clone.set_appsrc(appsrc);
-        //     None
-        // });
-
-        let inner = self.inner.lock().unwrap();
-        let bus = inner.playbin.get_bus().unwrap();
-
-        let ret = inner.playbin.set_state(gst::State::Paused);
-        assert_ne!(ret, gst::StateChangeReturn::Failure);
-
         let inner_clone = self.inner.clone();
-        thread::spawn(move || loop {
-            let msg = match bus.timed_pop(u64::MAX) {
-                None => break,
-                Some(msg) => msg,
-            };
+        self.inner.lock().unwrap().player.connect_end_of_stream(
+            move |_| {
+                let inner = Arc::clone(&inner_clone);
+                let mut guard = inner.lock().unwrap();
 
-            match msg.view() {
-                gst::MessageView::Eos(..) => {
-                    inner_clone.lock().unwrap().handle_eos();
-                    break;
-                }
-                gst::MessageView::Error(err) => {
-                    println!(
-                        "Error from {}: {} ({:?})",
-                        msg.get_src().get_path_string(),
-                        err.get_error(),
-                        err.get_debug().unwrap()
-                    );
-                    inner_clone.lock().unwrap().stop();
-                    break;
-                }
-                gst::MessageView::StateChanged(s) => match inner_clone.lock() {
-                    Ok(mut inner) => if msg.get_src() == inner.playbin {
-                        if (s.get_old(), s.get_current()) ==
-                            (gst::State::Ready, gst::State::Paused)
-                        {
-                            inner.check_metadata();
-                            println!(
-                                "State changed from {}: {:?} -> {:?} ({:?})",
-                                msg.get_src().get_path_string(),
-                                s.get_old(),
-                                s.get_current(),
-                                s.get_pending()
-                            );
+                guard.handle_eos();
+            },
+        );
 
-                        }
-                    },
-                    _ => {}
-                },
-                _ => (),
+        self.inner.lock().unwrap().player.connect_state_changed(
+            move |_, state| {
+                println!("new state: {:?}", state);
+            },
+        );
+
+        self.inner.lock().unwrap().player.connect_duration_changed(
+            move |_, duration| {
+                let mut seconds = duration / 1_000_000_000;
+                let mut minutes = seconds / 60;
+                let hours = minutes / 60;
+
+                seconds %= 60;
+                minutes %= 60;
+
+                println!(
+                    "Duration changed to: {:02}:{:02}:{:02}",
+                    hours,
+                    minutes,
+                    seconds
+                );
+            },
+        );
+
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.start();
+        }
+    }
+
+    pub fn ready(&mut self) -> bool {
+        if let Ok(mut inner) = self.inner.lock() {
+            if let None = inner.appsrc {
+                let pipeline = inner.player.get_pipeline().unwrap();
+                let source = pipeline.get_property("source").unwrap();
+                if let Some(source) = source.downcast::<gst::Element>().unwrap().get() {
+                    let appsrc = source
+                        .clone()
+                        .dynamic_cast::<gst_app::AppSrc>()
+                        .expect("Source element is expected to be an appsrc!");
+
+                    println!("Got source: {:?}", appsrc);
+                    appsrc.set_property_format(gst::Format::Bytes);
+                    appsrc.set_property_block(true);
+                    appsrc.set_size(inner.input_size as i64);
+                    inner.set_app_src(appsrc);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                true
             }
-        });
-
+        } else {
+            false
+        }
     }
 
     pub fn play(&mut self) {
-        let mut inner = self.inner.lock().unwrap();
-        if let None = inner.appsrc {
-            let source = inner
-                .playbin
-                .get_property("source")
-                .unwrap()
-                .downcast::<gst::Element>()
-                .unwrap()
-                .get()
-                .unwrap();
-            let appsrc = source
-                .clone()
-                .dynamic_cast::<gst_app::AppSrc>()
-                .expect("Source element is expected to be an appsrc!");
-
-            println!("Got source: {:?}", appsrc);
-            appsrc.set_property_format(gst::Format::Bytes);
-            appsrc.set_property_block(true);
-            inner.appsrc = Some(appsrc);
-        }
-        inner.playbin.set_state(gst::State::Playing);
+        self.inner.lock().unwrap().play();
     }
 
     pub fn end_of_stream(&mut self) -> bool {
@@ -216,14 +163,11 @@ impl Player {
     }
 
     pub fn stop(&mut self) {
-        self.inner.lock().unwrap().stop()
+        self.inner.lock().unwrap().stop();
     }
 
-    pub fn get_metadata(&mut self) -> Option<Metadata> {
-        match self.inner.lock() {
-            Ok(mut i) => i.get_metadata(),
-            Err(_) => None,
-        }
+    pub fn get_metadata(&mut self) -> Option<gst_player::PlayerMediaInfo> {
+        self.inner.lock().unwrap().get_metadata()
     }
 
     pub fn push_data(&mut self, data: &Vec<u8>) -> bool {

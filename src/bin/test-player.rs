@@ -8,6 +8,11 @@ use std::path::Path;
 use std::io::BufReader;
 use std::{thread, time};
 
+// FIXME: hide those, somehow.
+extern crate gstreamer_player;
+use gstreamer_player::PlayerMediaInfoExt;
+use gstreamer_player::PlayerVideoInfoExt;
+
 fn main() {
 
     let args: Vec<_> = env::args().collect();
@@ -29,13 +34,20 @@ fn main() {
         Ok(file) => file,
     };
 
-    let mut buf_reader = BufReader::new(file);
-
+    if let Ok(metadata) = file.metadata() {
+        p.set_input_size(metadata.len());
+    }
     p.play();
+
+    let mut buf_reader = BufReader::new(file);
 
     let mut metadata_found = false;
     while !p.end_of_stream() {
         let mut buffer = [0; 8192];
+        if !p.ready() {
+            thread::sleep(time::Duration::from_millis(200));
+            continue;
+        }
         match buf_reader.read(&mut buffer[..]) {
             Ok(size) => if size > 0 {
                 let vec = Vec::from(&buffer[..]);
@@ -56,6 +68,23 @@ fn main() {
         if !metadata_found {
             if let Some(metadata) = p.get_metadata() {
                 println!("Metadata: {:?}", metadata);
+                let duration = metadata.get_duration();
+                let mut seconds = duration / 1_000_000_000;
+                let mut minutes = seconds / 60;
+                let hours = minutes / 60;
+
+                seconds %= 60;
+                minutes %= 60;
+
+                println!("Duration: {:02}:{:02}:{:02}", hours, minutes, seconds);
+
+                let video_streams = metadata.get_video_streams();
+                for s in video_streams {
+                    let width = s.get_width();
+                    let height = s.get_height();
+                    println!("video stream dimensions: {}x{}", width, height);
+                }
+
                 metadata_found = true;
             }
         }
