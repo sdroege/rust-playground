@@ -34,8 +34,9 @@ pub struct Metadata {
     width: i32,
     height: i32,
     format: string::String,
-    video: Option<string::String>,
-    audio: Option<string::String>,
+    // TODO: Might be nice to move width and height along with each video track.
+    video_tracks: Vec<string::String>,
+    audio_tracks: Vec<string::String>,
 }
 
 impl PlayerInner {
@@ -74,36 +75,40 @@ impl PlayerInner {
             }
 
             let mut format = string::String::from("");
-            let mut audio = None;
-            let mut video = None;
+            let mut audio_tracks = Vec::new();
+            let mut video_tracks = Vec::new();
             if let Some(f) = media_info.get_container_format() {
                 format = f;
             }
 
-            // FIXME: This doesn't handle multi audio/video streams.
             for stream_info in media_info.get_stream_list() {
                 if let Some(stream_type) = stream_info.get_stream_type() {
                     match stream_type.as_str() {
                         "audio" => {
-                            audio = Some(stream_info.get_codec().unwrap());
+                            audio_tracks.push(stream_info.get_codec().unwrap());
                         }
                         "video" => {
-                            video = Some(stream_info.get_codec().unwrap());
+                            video_tracks.push(stream_info.get_codec().unwrap());
                         }
                         _ => {}
                     }
                 }
             }
-            let first_video_stream = &media_info.get_video_streams()[0];
-            let width = first_video_stream.get_width();
-            let height = first_video_stream.get_height();
+
+            let mut width = 0;
+            let mut height = 0;
+            if media_info.get_number_of_video_streams() > 0 {
+                let first_video_stream = &media_info.get_video_streams()[0];
+                width = first_video_stream.get_width();
+                height = first_video_stream.get_height();
+            }
             Some(Metadata {
                 duration: duration,
                 width: width,
                 height: height,
                 format: format,
-                audio: audio,
-                video: video,
+                audio_tracks: audio_tracks,
+                video_tracks: video_tracks,
             })
         } else {
             None
