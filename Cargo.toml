@@ -4,7 +4,7 @@ version = "0.1.0"
 authors = ["Philippe Normand <philn@igalia.com>"]
 
 [lib]
-name = "media"
+name = "playground"
 path = "src/lib.rs"
 
 [dependencies]

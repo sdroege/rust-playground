@@ -1,4 +1,4 @@
-extern crate media;
+extern crate playground;
 
 use std::env;
 use std::error::Error;
@@ -22,8 +22,8 @@ fn main() {
         panic!("Usage: test-player file_path");
     };
 
-    media::initialize();
-    let mut p = media::player::Player::new();
+    playground::initialize();
+    let mut p = playground::player::Player::new();
     p.start();
 
     let path = Path::new(filename);
