@@ -6,9 +6,11 @@ use self::glib::*;
 
 use std::u64;
 use std::time;
+use std::string;
 
 use self::gst_player::PlayerMediaInfoExt;
 use self::gst_player::PlayerVideoInfoExt;
+use self::gst_player::PlayerStreamInfoExt;
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -31,6 +33,9 @@ pub struct Metadata {
     duration: Option<time::Duration>,
     width: i32,
     height: i32,
+    format: string::String,
+    video: Option<string::String>,
+    audio: Option<string::String>,
 }
 
 impl PlayerInner {
@@ -68,6 +73,25 @@ impl PlayerInner {
                 duration = Some(time::Duration::new(secs, nanos as u32));
             }
 
+            let mut format = string::String::from("");
+            let mut audio = None;
+            let mut video = None;
+            if let Some(f) = media_info.get_container_format() {
+                format = f;
+            }
+            for stream_info in media_info.get_stream_list() {
+                if let Some(stream_type) = stream_info.get_stream_type() {
+                    match stream_type.as_str() {
+                        "audio" => {
+                            audio = Some(stream_info.get_codec().unwrap());
+                        }
+                        "video" => {
+                            video = Some(stream_info.get_codec().unwrap());
+                        }
+                        _ => {}
+                    }
+                }
+            }
             let first_video_stream = &media_info.get_video_streams()[0];
             let width = first_video_stream.get_width();
             let height = first_video_stream.get_height();
@@ -75,6 +99,9 @@ impl PlayerInner {
                 duration: duration,
                 width: width,
                 height: height,
+                format: format,
+                audio: audio,
+                video: video,
             })
         } else {
             None
