@@ -79,6 +79,8 @@ impl PlayerInner {
             if let Some(f) = media_info.get_container_format() {
                 format = f;
             }
+
+            // FIXME: This doesn't handle multi audio/video streams.
             for stream_info in media_info.get_stream_list() {
                 if let Some(stream_type) = stream_info.get_stream_type() {
                     match stream_type.as_str() {
