@@ -5,6 +5,10 @@ extern crate glib;
 use self::glib::*;
 
 use std::u64;
+use std::time;
+
+use self::gst_player::PlayerMediaInfoExt;
+use self::gst_player::PlayerVideoInfoExt;
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -20,6 +24,13 @@ struct PlayerInner {
 #[derive(Debug)]
 pub struct Player {
     inner: Arc<Mutex<PlayerInner>>,
+}
+
+#[derive(Debug)]
+pub struct Metadata {
+    duration: Option<time::Duration>,
+    width: i32,
+    height: i32,
 }
 
 impl PlayerInner {
@@ -47,8 +58,27 @@ impl PlayerInner {
         self.appsrc = Some(appsrc);
     }
 
-    pub fn get_metadata(&mut self) -> Option<gst_player::PlayerMediaInfo> {
-        self.player.get_media_info()
+    pub fn get_metadata(&mut self) -> Option<Metadata> {
+        if let Some(media_info) = self.player.get_media_info() {
+            let dur = media_info.get_duration();
+            let mut duration = None;
+            if dur != u64::MAX {
+                let secs = dur / 1_000_000_000;
+                let nanos = dur % 1_000_000_000;
+                duration = Some(time::Duration::new(secs, nanos as u32));
+            }
+
+            let first_video_stream = &media_info.get_video_streams()[0];
+            let width = first_video_stream.get_width();
+            let height = first_video_stream.get_height();
+            Some(Metadata {
+                duration: duration,
+                width: width,
+                height: height,
+            })
+        } else {
+            None
+        }
     }
 }
 
@@ -166,7 +196,7 @@ impl Player {
         self.inner.lock().unwrap().stop();
     }
 
-    pub fn get_metadata(&mut self) -> Option<gst_player::PlayerMediaInfo> {
+    pub fn get_metadata(&mut self) -> Option<Metadata> {
         self.inner.lock().unwrap().get_metadata()
     }
 
