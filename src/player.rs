@@ -30,13 +30,13 @@ pub struct Player {
 
 #[derive(Debug)]
 pub struct Metadata {
-    duration: Option<time::Duration>,
-    width: i32,
-    height: i32,
-    format: string::String,
+    pub duration: Option<time::Duration>,
+    pub width: u32,
+    pub height: u32,
+    pub format: string::String,
     // TODO: Might be nice to move width and height along with each video track.
-    video_tracks: Vec<string::String>,
-    audio_tracks: Vec<string::String>,
+    pub video_tracks: Vec<string::String>,
+    pub audio_tracks: Vec<string::String>,
 }
 
 impl PlayerInner {
@@ -104,8 +104,8 @@ impl PlayerInner {
             }
             Some(Metadata {
                 duration: duration,
-                width: width,
-                height: height,
+                width: width as u32,
+                height: height as u32,
                 format: format,
                 audio_tracks: audio_tracks,
                 video_tracks: video_tracks,
