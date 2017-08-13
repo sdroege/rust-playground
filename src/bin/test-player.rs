@@ -45,10 +45,7 @@ fn main() {
         }
         match buf_reader.read(&mut buffer[..]) {
             Ok(size) => if size > 0 {
-                let vec = Vec::from(&buffer[..]);
-
-                if p.push_data(&vec) == false {
-                    eprintln!("err 1");
+                if !p.push_data(&buffer) {
                     break;
                 }
             } else {

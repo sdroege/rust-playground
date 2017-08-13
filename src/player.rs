@@ -15,7 +15,6 @@ use self::gst_player::PlayerStreamInfoExt;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-#[derive(Debug, Clone)]
 struct PlayerInner {
     player: gst_player::Player,
     appsrc: Option<gst_app::AppSrc>,
@@ -23,7 +22,6 @@ struct PlayerInner {
     input_size: u64,
 }
 
-#[derive(Debug)]
 pub struct Player {
     inner: Arc<Mutex<PlayerInner>>,
 }
@@ -234,9 +232,10 @@ impl Player {
         self.inner.lock().unwrap().get_metadata()
     }
 
-    pub fn push_data(&mut self, data: &Vec<u8>) -> bool {
+    pub fn push_data(&mut self, data: &[u8]) -> bool {
         if let Some(ref mut appsrc) = self.inner.lock().unwrap().appsrc {
-            let buffer = gst::Buffer::from_vec(data.to_vec()).expect("Unable to create a Buffer");
+            let v = Vec::from(data);
+            let buffer = gst::Buffer::from_vec(v).expect("Unable to create a Buffer");
 
             if appsrc.push_buffer(buffer) == gst::FlowReturn::Ok {
                 return true;
