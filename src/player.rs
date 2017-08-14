@@ -122,6 +122,10 @@ impl Player {
             .set_property("uri", &Value::from("appsrc://"))
             .expect("Can't set uri property");
 
+        // Disable periodic position updates for now.
+        let config = gst::Structure::new("config", &[("position-interval-update", &0.to_value())]);
+        player.set_config(config);
+
         // FIXME: glimagesink can't be used because:
         // 1. test-player isn't a Cocoa app running a NSApplication
         // 2. the GstGLDisplayCocoa depends on a main GLib loop in that case ^^ which test-player isn't using
