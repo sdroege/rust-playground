@@ -7,23 +7,17 @@ use self::glib::*;
 use std::u64;
 use std::time;
 use std::string;
+use std::sync::{Arc, Mutex};
 
 use self::gst_player::PlayerMediaInfoExt;
 use self::gst_player::PlayerVideoInfoExt;
 use self::gst_player::PlayerStreamInfoExt;
 
-use std::sync::Arc;
-use std::sync::Mutex;
-
-struct PlayerInner {
+struct PlayerInner<E> {
     player: gst_player::Player,
     appsrc: Option<gst_app::AppSrc>,
-    eos_reached: bool,
     input_size: u64,
-}
-
-pub struct Player {
-    inner: Arc<Mutex<PlayerInner>>,
+    subscribers: Vec<Box<Fn(&E) + Send>>,
 }
 
 #[derive(Debug)]
@@ -37,13 +31,33 @@ pub struct Metadata {
     pub audio_tracks: Vec<string::String>,
 }
 
-impl PlayerInner {
-    pub fn set_input_size(&mut self, size: u64) {
-        self.input_size = size;
+
+#[derive(Debug)]
+pub enum PlayerEvent {
+    EndOfStream,
+    MetadataUpdated(Metadata),
+}
+
+pub struct Player {
+    inner: Arc<Mutex<PlayerInner<PlayerEvent>>>,
+}
+
+impl<E> PlayerInner<E> {
+    pub fn register_event_handler<F>(&mut self, callback: F)
+    where
+        F: 'static + Fn(&E) + Send,
+    {
+        self.subscribers.push(Box::new(callback));
     }
 
-    pub fn handle_eos(&mut self) {
-        self.eos_reached = true;
+    pub fn notify(&self, event: E) {
+        for callback in &self.subscribers {
+            callback(&event);
+        }
+    }
+
+    pub fn set_input_size(&mut self, size: u64) {
+        self.input_size = size;
     }
 
     pub fn play(&mut self) {
@@ -62,55 +76,52 @@ impl PlayerInner {
         self.appsrc = Some(appsrc);
     }
 
-    pub fn get_metadata(&mut self) -> Option<Metadata> {
-        if let Some(media_info) = self.player.get_media_info() {
-            let dur = media_info.get_duration();
-            let mut duration = None;
-            if dur != u64::MAX {
-                let secs = dur / 1_000_000_000;
-                let nanos = dur % 1_000_000_000;
-                duration = Some(time::Duration::new(secs, nanos as u32));
-            }
+    pub fn get_metadata(&self, media_info: &PlayerMediaInfoExt) -> Metadata {
+        let dur = media_info.get_duration();
+        let mut duration = None;
+        if dur != u64::MAX {
+            let secs = dur / 1_000_000_000;
+            let nanos = dur % 1_000_000_000;
+            duration = Some(time::Duration::new(secs, nanos as u32));
+        }
 
-            let mut format = string::String::from("");
-            let mut audio_tracks = Vec::new();
-            let mut video_tracks = Vec::new();
-            if let Some(f) = media_info.get_container_format() {
-                format = f;
-            }
+        let mut format = string::String::from("");
+        let mut audio_tracks = Vec::new();
+        let mut video_tracks = Vec::new();
+        if let Some(f) = media_info.get_container_format() {
+            format = f;
+        }
 
-            for stream_info in media_info.get_stream_list() {
-                if let Some(stream_type) = stream_info.get_stream_type() {
-                    match stream_type.as_str() {
-                        "audio" => {
-                            audio_tracks.push(stream_info.get_codec().unwrap());
-                        }
-                        "video" => {
-                            video_tracks.push(stream_info.get_codec().unwrap());
-                        }
-                        _ => {}
+        for stream_info in media_info.get_stream_list() {
+            if let Some(stream_type) = stream_info.get_stream_type() {
+                match stream_type.as_str() {
+                    "audio" => {
+                        audio_tracks.push(stream_info.get_codec().unwrap());
                     }
+                    "video" => {
+                        video_tracks.push(stream_info.get_codec().unwrap());
+                    }
+                    _ => {}
                 }
             }
-
-            let mut width = 0;
-            let mut height = 0;
-            if media_info.get_number_of_video_streams() > 0 {
-                let first_video_stream = &media_info.get_video_streams()[0];
-                width = first_video_stream.get_width();
-                height = first_video_stream.get_height();
-            }
-            Some(Metadata {
-                duration: duration,
-                width: width as u32,
-                height: height as u32,
-                format: format,
-                audio_tracks: audio_tracks,
-                video_tracks: video_tracks,
-            })
-        } else {
-            None
         }
+
+        let mut width = 0;
+        let mut height = 0;
+        if media_info.get_number_of_video_streams() > 0 {
+            let first_video_stream = &media_info.get_video_streams()[0];
+            width = first_video_stream.get_width();
+            height = first_video_stream.get_height();
+        }
+        Metadata {
+            duration: duration,
+            width: width as u32,
+            height: height as u32,
+            format: format,
+            audio_tracks: audio_tracks,
+            video_tracks: video_tracks,
+        }
+
     }
 }
 
@@ -137,13 +148,20 @@ impl Player {
         }
 
         Player {
-            inner: Arc::new(Mutex::new(PlayerInner {
+            inner: Arc::new(Mutex::new(PlayerInner::<PlayerEvent> {
                 player: player,
                 appsrc: None,
-                eos_reached: false,
                 input_size: 0,
+                subscribers: Vec::new(),
             })),
         }
+    }
+
+    pub fn register_event_handler<F>(&mut self, callback: F)
+    where
+        F: 'static + Fn(&PlayerEvent) + Send,
+    {
+        self.inner.lock().unwrap().register_event_handler(callback);
     }
 
     pub fn set_input_size(&mut self, size: u64) {
@@ -157,9 +175,9 @@ impl Player {
         self.inner.lock().unwrap().player.connect_end_of_stream(
             move |_| {
                 let inner = Arc::clone(&inner_clone);
-                let mut guard = inner.lock().unwrap();
+                let guard = inner.lock().unwrap();
 
-                guard.handle_eos();
+                guard.notify(PlayerEvent::EndOfStream);
             },
         );
 
@@ -168,6 +186,19 @@ impl Player {
                 println!("new state: {:?}", state);
             },
         );
+
+        let inner_clone = self.inner.clone();
+        self.inner
+            .lock()
+            .unwrap()
+            .player
+            .connect_media_info_updated(move |_, info| {
+                let inner = Arc::clone(&inner_clone);
+                let guard = inner.lock().unwrap();
+
+                guard.notify(PlayerEvent::MetadataUpdated(guard.get_metadata(info)));
+
+            });
 
         self.inner.lock().unwrap().player.connect_duration_changed(
             move |_, duration| {
@@ -224,16 +255,8 @@ impl Player {
         self.inner.lock().unwrap().play();
     }
 
-    pub fn end_of_stream(&mut self) -> bool {
-        self.inner.lock().unwrap().eos_reached
-    }
-
     pub fn stop(&mut self) {
         self.inner.lock().unwrap().stop();
-    }
-
-    pub fn get_metadata(&mut self) -> Option<Metadata> {
-        self.inner.lock().unwrap().get_metadata()
     }
 
     pub fn push_data(&mut self, data: &[u8]) -> bool {

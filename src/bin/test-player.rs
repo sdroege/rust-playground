@@ -7,6 +7,7 @@ use std::io::prelude::*;
 use std::path::Path;
 use std::io::BufReader;
 use std::{thread, time};
+use std::sync::{Arc, Mutex};
 
 fn main() {
 
@@ -20,6 +21,19 @@ fn main() {
     playground::initialize();
     let mut p = playground::player::Player::new();
     p.start();
+
+    let end_of_stream = Arc::new(Mutex::new(false));
+    let inner_eos = end_of_stream.clone();
+    p.register_event_handler(move |event| match *event {
+        playground::player::PlayerEvent::EndOfStream => {
+            let inner = Arc::clone(&inner_eos);
+            let mut eos_guard = inner.lock().unwrap();
+            *eos_guard = true;
+        }
+        playground::player::PlayerEvent::MetadataUpdated(ref m) => {
+            println!("Metadata updated! {:?}", m);
+        }
+    });
 
     let path = Path::new(filename);
     let display = path.display();
@@ -35,9 +49,7 @@ fn main() {
     p.play();
 
     let mut buf_reader = BufReader::new(file);
-
-    let mut metadata_found = false;
-    while !p.end_of_stream() {
+    while !*end_of_stream.lock().unwrap() {
         let mut buffer = [0; 8192];
         if !p.ready() {
             thread::sleep(time::Duration::from_millis(200));
@@ -54,13 +66,6 @@ fn main() {
             Err(e) => {
                 eprintln!("Error: {}", e);
                 break;
-            }
-        }
-
-        if !metadata_found {
-            if let Some(metadata) = p.get_metadata() {
-                println!("Metadata: {:?}", metadata);
-                metadata_found = true;
             }
         }
     }
