@@ -134,7 +134,7 @@ impl Player {
             .expect("Can't set uri property");
 
         // Disable periodic position updates for now.
-        let config = gst::Structure::new("config", &[("position-interval-update", &0.to_value())]);
+        let config = gst::Structure::new("config", &[("position-interval-update", &0u32)]);
         player.set_config(config);
 
         // FIXME: glimagesink can't be used because:
