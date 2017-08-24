@@ -20,7 +20,6 @@ fn main() {
 
     playground::initialize();
     let mut p = playground::player::Player::new();
-    p.start();
 
     let end_of_stream = Arc::new(Mutex::new(false));
     let inner_eos = end_of_stream.clone();
@@ -46,15 +45,12 @@ fn main() {
     if let Ok(metadata) = file.metadata() {
         p.set_input_size(metadata.len());
     }
+    p.start();
     p.play();
 
     let mut buf_reader = BufReader::new(file);
     while !*end_of_stream.lock().unwrap() {
         let mut buffer = [0; 8192];
-        if !p.ready() {
-            thread::sleep(time::Duration::from_millis(200));
-            continue;
-        }
         match buf_reader.read(&mut buffer[..]) {
             Ok(size) => if size > 0 {
                 if !p.push_data(&buffer) {

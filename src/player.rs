@@ -7,7 +7,7 @@ use self::glib::*;
 use std::u64;
 use std::time;
 use std::string;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
 use self::gst_player::PlayerMediaInfoExt;
 use self::gst_player::PlayerVideoInfoExt;
@@ -75,56 +75,54 @@ impl<E> PlayerInner<E> {
     pub fn set_app_src(&mut self, appsrc: gst_app::AppSrc) {
         self.appsrc = Some(appsrc);
     }
-
-    pub fn get_metadata(&self, media_info: &PlayerMediaInfoExt) -> Metadata {
-        let dur = media_info.get_duration();
-        let mut duration = None;
-        if dur != u64::MAX {
-            let secs = dur / 1_000_000_000;
-            let nanos = dur % 1_000_000_000;
-            duration = Some(time::Duration::new(secs, nanos as u32));
-        }
-
-        let mut format = string::String::from("");
-        let mut audio_tracks = Vec::new();
-        let mut video_tracks = Vec::new();
-        if let Some(f) = media_info.get_container_format() {
-            format = f;
-        }
-
-        for stream_info in media_info.get_stream_list() {
-            if let Some(stream_type) = stream_info.get_stream_type() {
-                match stream_type.as_str() {
-                    "audio" => {
-                        audio_tracks.push(stream_info.get_codec().unwrap());
-                    }
-                    "video" => {
-                        video_tracks.push(stream_info.get_codec().unwrap());
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        let mut width = 0;
-        let mut height = 0;
-        if media_info.get_number_of_video_streams() > 0 {
-            let first_video_stream = &media_info.get_video_streams()[0];
-            width = first_video_stream.get_width();
-            height = first_video_stream.get_height();
-        }
-        Metadata {
-            duration: duration,
-            width: width as u32,
-            height: height as u32,
-            format: format,
-            audio_tracks: audio_tracks,
-            video_tracks: video_tracks,
-        }
-
-    }
 }
 
+pub fn media_info_to_metadata(media_info: &PlayerMediaInfo) -> Metadata {
+    let dur = media_info.get_duration();
+    let mut duration = None;
+    if dur != u64::MAX {
+        let secs = dur / 1_000_000_000;
+        let nanos = dur % 1_000_000_000;
+        duration = Some(time::Duration::new(secs, nanos as u32));
+    }
+
+    let mut format = string::String::from("");
+    let mut audio_tracks = Vec::new();
+    let mut video_tracks = Vec::new();
+    if let Some(f) = media_info.get_container_format() {
+        format = f;
+    }
+
+    for stream_info in media_info.get_stream_list() {
+        if let Some(stream_type) = stream_info.get_stream_type() {
+            match stream_type.as_str() {
+                "audio" => {
+                    audio_tracks.push(stream_info.get_codec().unwrap());
+                }
+                "video" => {
+                    video_tracks.push(stream_info.get_codec().unwrap());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut width = 0;
+    let mut height = 0;
+    if media_info.get_number_of_video_streams() > 0 {
+        let first_video_stream = &media_info.get_video_streams()[0];
+        width = first_video_stream.get_width();
+        height = first_video_stream.get_height();
+    }
+    Metadata {
+        duration: duration,
+        width: width as u32,
+        height: height as u32,
+        format: format,
+        audio_tracks: audio_tracks,
+        video_tracks: video_tracks,
+    }
+}
 
 impl Player {
     pub fn new() -> Player {
@@ -196,8 +194,7 @@ impl Player {
                 let inner = Arc::clone(&inner_clone);
                 let guard = inner.lock().unwrap();
 
-                guard.notify(PlayerEvent::MetadataUpdated(guard.get_metadata(info)));
-
+                guard.notify(PlayerEvent::MetadataUpdated(media_info_to_metadata(info)));
             });
 
         self.inner.lock().unwrap().player.connect_duration_changed(
@@ -220,34 +217,41 @@ impl Player {
 
         if let Ok(mut inner) = self.inner.lock() {
             inner.start();
-        }
-    }
+            let pipeline = inner.player.get_pipeline().unwrap();
+            let pair = Arc::new((Mutex::new(false), Condvar::new()));
+            let pair2 = pair.clone();
 
-    pub fn ready(&mut self) -> bool {
-        if let Ok(mut inner) = self.inner.lock() {
-            if let None = inner.appsrc {
-                let pipeline = inner.player.get_pipeline().unwrap();
-                let source = pipeline.get_property("source").unwrap();
-                if let Some(source) = source.downcast::<gst::Element>().unwrap().get() {
-                    let appsrc = source
-                        .clone()
-                        .dynamic_cast::<gst_app::AppSrc>()
-                        .expect("Source element is expected to be an appsrc!");
+            pipeline
+                .connect("source-setup", false, move |_| {
+                    let &(ref lock, ref cvar) = &*pair2;
+                    let mut started = lock.lock().unwrap();
+                    *started = true;
+                    cvar.notify_one();
+                    None
+                })
+                .unwrap();
 
-                    println!("Got source: {:?}", appsrc);
-                    appsrc.set_property_format(gst::Format::Bytes);
-                    appsrc.set_property_block(true);
-                    appsrc.set_size(inner.input_size as i64);
-                    inner.set_app_src(appsrc);
-                    true
-                } else {
-                    false
-                }
-            } else {
-                true
+            let &(ref lock, ref cvar) = &*pair;
+            let mut started = lock.lock().unwrap();
+            while !*started {
+                started = cvar.wait(started).unwrap();
             }
-        } else {
-            false
+
+            let source = pipeline.get_property("source").unwrap();
+            if let Some(source) = source.downcast::<gst::Element>().unwrap().get() {
+                let appsrc = source
+                    .clone()
+                    .dynamic_cast::<gst_app::AppSrc>()
+                    .expect("Source element is expected to be an appsrc!");
+
+                println!("Got source: {:?}", appsrc);
+                appsrc.set_property_format(gst::Format::Bytes);
+                // appsrc.set_property_block(true);
+                if inner.input_size > 0 {
+                    appsrc.set_size(inner.input_size as i64);
+                }
+                inner.set_app_src(appsrc);
+            }
         }
     }
 
