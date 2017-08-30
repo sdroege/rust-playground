@@ -9,8 +9,7 @@ use std::time;
 use std::string;
 use std::sync::{Arc, Condvar, Mutex};
 
-use self::gst_player::PlayerMediaInfoExt;
-use self::gst_player::PlayerVideoInfoExt;
+use self::gst_player::PlayerMediaInfo;
 use self::gst_player::PlayerStreamInfoExt;
 
 struct PlayerInner<E> {
@@ -38,6 +37,7 @@ pub enum PlayerEvent {
     MetadataUpdated(Metadata),
 }
 
+#[derive(Clone)]
 pub struct Player {
     inner: Arc<Mutex<PlayerInner<PlayerEvent>>>,
 }
@@ -244,7 +244,6 @@ impl Player {
                     .dynamic_cast::<gst_app::AppSrc>()
                     .expect("Source element is expected to be an appsrc!");
 
-                println!("Got source: {:?}", appsrc);
                 appsrc.set_property_format(gst::Format::Bytes);
                 // appsrc.set_property_block(true);
                 if inner.input_size > 0 {

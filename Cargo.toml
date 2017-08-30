@@ -8,7 +8,7 @@ name = "playground"
 path = "src/lib.rs"
 
 [dependencies]
-glib = { version = "0.1.3", git = "https://github.com/gtk-rs/glib" }
+glib = { version = "0.3.0", git = "https://github.com/gtk-rs/glib" }
 gstreamer = { version="0.1.0", git="https://github.com/sdroege/gstreamer-rs.git" }
 gstreamer-app = { version="0.1.0", git="https://github.com/sdroege/gstreamer-rs.git" }
 gstreamer-player = { version="0.1.0", git="https://github.com/sdroege/gstreamer-rs.git" }
