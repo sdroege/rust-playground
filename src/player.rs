@@ -1,7 +1,7 @@
+extern crate glib;
 extern crate gstreamer as gst;
 extern crate gstreamer_app as gst_app;
 extern crate gstreamer_player as gst_player;
-extern crate glib;
 use self::glib::*;
 
 use std::u64;
@@ -79,12 +79,14 @@ impl<E> PlayerInner<E> {
 
 pub fn media_info_to_metadata(media_info: &PlayerMediaInfo) -> Metadata {
     let dur = media_info.get_duration();
-    let mut duration = None;
-    if dur != u64::MAX {
+    let duration = if dur != u64::MAX {
         let secs = dur / 1_000_000_000;
         let nanos = dur % 1_000_000_000;
-        duration = Some(time::Duration::new(secs, nanos as u32));
-    }
+
+        Some(time::Duration::new(secs, nanos as u32))
+    } else {
+        None
+    };
 
     let mut format = string::String::from("");
     let mut audio_tracks = Vec::new();
@@ -108,12 +110,13 @@ pub fn media_info_to_metadata(media_info: &PlayerMediaInfo) -> Metadata {
     }
 
     let mut width = 0;
-    let mut height = 0;
-    if media_info.get_number_of_video_streams() > 0 {
+    let height = if media_info.get_number_of_video_streams() > 0 {
         let first_video_stream = &media_info.get_video_streams()[0];
         width = first_video_stream.get_width();
-        height = first_video_stream.get_height();
-    }
+        first_video_stream.get_height()
+    } else {
+        0
+    };
     Metadata {
         duration: duration,
         width: width as u32,
@@ -137,7 +140,8 @@ impl Player {
 
         // FIXME: glimagesink can't be used because:
         // 1. test-player isn't a Cocoa app running a NSApplication
-        // 2. the GstGLDisplayCocoa depends on a main GLib loop in that case ^^ which test-player isn't using
+        // 2. the GstGLDisplayCocoa depends on a main GLib loop in that case ^^ which test-player
+        // is not using
         let pipeline = player.get_pipeline().unwrap();
         if let Some(sink) = gst::ElementFactory::make("osxvideosink", None) {
             pipeline
@@ -170,20 +174,24 @@ impl Player {
 
     pub fn start(&mut self) {
         let inner_clone = self.inner.clone();
-        self.inner.lock().unwrap().player.connect_end_of_stream(
-            move |_| {
+        self.inner
+            .lock()
+            .unwrap()
+            .player
+            .connect_end_of_stream(move |_| {
                 let inner = Arc::clone(&inner_clone);
                 let guard = inner.lock().unwrap();
 
                 guard.notify(PlayerEvent::EndOfStream);
-            },
-        );
+            });
 
-        self.inner.lock().unwrap().player.connect_state_changed(
-            move |_, state| {
+        self.inner
+            .lock()
+            .unwrap()
+            .player
+            .connect_state_changed(move |_, state| {
                 println!("new state: {:?}", state);
-            },
-        );
+            });
 
         let inner_clone = self.inner.clone();
         self.inner
@@ -197,8 +205,11 @@ impl Player {
                 guard.notify(PlayerEvent::MetadataUpdated(media_info_to_metadata(info)));
             });
 
-        self.inner.lock().unwrap().player.connect_duration_changed(
-            move |_, duration| {
+        self.inner
+            .lock()
+            .unwrap()
+            .player
+            .connect_duration_changed(move |_, duration| {
                 let mut seconds = duration / 1_000_000_000;
                 let mut minutes = seconds / 60;
                 let hours = minutes / 60;
@@ -212,8 +223,7 @@ impl Player {
                     minutes,
                     seconds
                 );
-            },
-        );
+            });
 
         if let Ok(mut inner) = self.inner.lock() {
             inner.start();
@@ -266,12 +276,7 @@ impl Player {
         if let Some(ref mut appsrc) = self.inner.lock().unwrap().appsrc {
             let v = Vec::from(data);
             let buffer = gst::Buffer::from_vec(v).expect("Unable to create a Buffer");
-
-            if appsrc.push_buffer(buffer) == gst::FlowReturn::Ok {
-                return true;
-            } else {
-                return false;
-            }
+            return appsrc.push_buffer(buffer) == gst::FlowReturn::Ok;
         } else {
             println!("the stream hasn't been initialized yet");
             return false;
