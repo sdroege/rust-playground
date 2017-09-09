@@ -33,11 +33,19 @@ pub struct Metadata {
     pub audio_tracks: Vec<string::String>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum PlaybackState {
+    Stopped,
+    // Buffering,
+    Paused,
+    Playing,
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum PlayerEvent {
     EndOfStream,
     MetadataUpdated(Metadata),
+    StateChanged(PlaybackState),
 }
 
 #[derive(Clone)]
@@ -142,7 +150,7 @@ impl Player {
         let config = gst::Structure::new("config", &[("position-interval-update", &0u32)]);
         player.set_config(config);
 
-        #[cfg(target_os="macos")]
+        #[cfg(target_os = "macos")]
         {
             // FIXME: glimagesink can't be used because:
             // 1. test-player isn't a Cocoa app running a NSApplication
@@ -192,12 +200,24 @@ impl Player {
                 guard.notify(PlayerEvent::EndOfStream);
             });
 
+        let inner_clone = self.inner.clone();
         self.inner
             .lock()
             .unwrap()
             .player
-            .connect_state_changed(move |_, state| {
-                println!("new state: {:?}", state);
+            .connect_state_changed(move |_, player_state| {
+                let state = match player_state {
+                    gst_player::PlayerState::Stopped => Some(PlaybackState::Stopped),
+                    gst_player::PlayerState::Paused => Some(PlaybackState::Paused),
+                    gst_player::PlayerState::Playing => Some(PlaybackState::Playing),
+                    _ => None,
+                };
+                if let Some(v) = state {
+                    let inner = Arc::clone(&inner_clone);
+                    let guard = inner.lock().unwrap();
+
+                    guard.notify(PlayerEvent::StateChanged(v));
+                }
             });
 
         let inner_clone = self.inner.clone();

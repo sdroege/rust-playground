@@ -34,6 +34,9 @@ fn main() {
             playground::player::PlayerEvent::MetadataUpdated(ref m) => {
                 println!("Metadata updated! {:?}", m);
             }
+            playground::player::PlayerEvent::StateChanged(ref s) => {
+                println!("State changed to {:?}", s);
+            }
         }
     });
 
