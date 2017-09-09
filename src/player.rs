@@ -4,6 +4,9 @@ extern crate gstreamer_app as gst_app;
 extern crate gstreamer_player as gst_player;
 use self::glib::*;
 
+extern crate serde;
+extern crate serde_json;
+
 use std::u64;
 use std::time;
 use std::string;
@@ -12,14 +15,14 @@ use std::sync::{Arc, Condvar, Mutex};
 use self::gst_player::PlayerMediaInfo;
 use self::gst_player::PlayerStreamInfoExt;
 
-struct PlayerInner<E> {
+struct PlayerInner {
     player: gst_player::Player,
     appsrc: Option<gst_app::AppSrc>,
     input_size: u64,
-    subscribers: Vec<Box<Fn(&E) + Send>>,
+    subscribers: Vec<Box<Fn(string::String) + Send>>,
 }
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Metadata {
     pub duration: Option<time::Duration>,
     pub width: u32,
@@ -31,7 +34,7 @@ pub struct Metadata {
 }
 
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum PlayerEvent {
     EndOfStream,
     MetadataUpdated(Metadata),
@@ -39,20 +42,21 @@ pub enum PlayerEvent {
 
 #[derive(Clone)]
 pub struct Player {
-    inner: Arc<Mutex<PlayerInner<PlayerEvent>>>,
+    inner: Arc<Mutex<PlayerInner>>,
 }
 
-impl<E> PlayerInner<E> {
+impl PlayerInner {
     pub fn register_event_handler<F>(&mut self, callback: F)
     where
-        F: 'static + Fn(&E) + Send,
+        F: 'static + Fn(string::String) + Send,
     {
         self.subscribers.push(Box::new(callback));
     }
 
-    pub fn notify(&self, event: E) {
+    pub fn notify(&self, event: PlayerEvent) {
+        let serialized = serde_json::to_string(&event).unwrap();
         for callback in &self.subscribers {
-            callback(&event);
+            callback(serialized.clone());
         }
     }
 
@@ -150,7 +154,7 @@ impl Player {
         }
 
         Player {
-            inner: Arc::new(Mutex::new(PlayerInner::<PlayerEvent> {
+            inner: Arc::new(Mutex::new(PlayerInner {
                 player: player,
                 appsrc: None,
                 input_size: 0,
@@ -161,7 +165,7 @@ impl Player {
 
     pub fn register_event_handler<F>(&mut self, callback: F)
     where
-        F: 'static + Fn(&PlayerEvent) + Send,
+        F: 'static + Fn(string::String) + Send,
     {
         self.inner.lock().unwrap().register_event_handler(callback);
     }
@@ -272,7 +276,7 @@ impl Player {
         self.inner.lock().unwrap().stop();
     }
 
-    pub fn push_data(&mut self, data: &[u8]) -> bool {
+    pub fn push_data(&self, data: &[u8]) -> bool {
         if let Some(ref mut appsrc) = self.inner.lock().unwrap().appsrc {
             let v = Vec::from(data);
             let buffer = gst::Buffer::from_vec(v).expect("Unable to create a Buffer");

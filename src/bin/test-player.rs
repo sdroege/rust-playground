@@ -1,4 +1,5 @@
 extern crate playground;
+extern crate serde_json;
 
 use std::env;
 use std::error::Error;
@@ -10,7 +11,6 @@ use std::{thread, time};
 use std::sync::{Arc, Mutex};
 
 fn main() {
-
     let args: Vec<_> = env::args().collect();
     let filename: &str = if args.len() == 2 {
         args[1].as_ref()
@@ -23,14 +23,17 @@ fn main() {
 
     let end_of_stream = Arc::new(Mutex::new(false));
     let inner_eos = end_of_stream.clone();
-    p.register_event_handler(move |event| match *event {
-        playground::player::PlayerEvent::EndOfStream => {
-            let inner = Arc::clone(&inner_eos);
-            let mut eos_guard = inner.lock().unwrap();
-            *eos_guard = true;
-        }
-        playground::player::PlayerEvent::MetadataUpdated(ref m) => {
-            println!("Metadata updated! {:?}", m);
+    p.register_event_handler(move |payload| {
+        let event: playground::player::PlayerEvent = serde_json::from_str(&payload).unwrap();
+        match event {
+            playground::player::PlayerEvent::EndOfStream => {
+                let inner = Arc::clone(&inner_eos);
+                let mut eos_guard = inner.lock().unwrap();
+                *eos_guard = true;
+            }
+            playground::player::PlayerEvent::MetadataUpdated(ref m) => {
+                println!("Metadata updated! {:?}", m);
+            }
         }
     });
 
