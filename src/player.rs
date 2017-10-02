@@ -10,7 +10,7 @@ use self::ipc_channel::ipc;
 use std::u64;
 use std::time;
 use std::string;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 
 use self::gst_player::PlayerMediaInfo;
 use self::gst_player::PlayerStreamInfoExt;
@@ -247,42 +247,33 @@ impl Player {
                 );
             });
 
+        let inner_clone = self.inner.clone();
         if let Ok(mut inner) = self.inner.lock() {
-            inner.start();
             let pipeline = inner.player.get_pipeline().unwrap();
-            let pair = Arc::new((Mutex::new(false), Condvar::new()));
-            let pair2 = pair.clone();
 
             pipeline
-                .connect("source-setup", false, move |_| {
-                    let &(ref lock, ref cvar) = &*pair2;
-                    let mut started = lock.lock().unwrap();
-                    *started = true;
-                    cvar.notify_one();
+                .connect("source-setup", false, move |args| {
+                    let mut inner = inner_clone.lock().unwrap();
+
+                    if let Some(source) = args[1].get::<gst::Element>() {
+                        let appsrc = source
+                            .clone()
+                            .dynamic_cast::<gst_app::AppSrc>()
+                            .expect("Source element is expected to be an appsrc!");
+
+                        appsrc.set_property_format(gst::Format::Bytes);
+                        // appsrc.set_property_block(true);
+                        if inner.input_size > 0 {
+                            appsrc.set_size(inner.input_size as i64);
+                        }
+                        inner.set_app_src(appsrc);
+                    }
+
                     None
                 })
                 .unwrap();
 
-            let &(ref lock, ref cvar) = &*pair;
-            let mut started = lock.lock().unwrap();
-            while !*started {
-                started = cvar.wait(started).unwrap();
-            }
-
-            let source = pipeline.get_property("source").unwrap();
-            if let Some(source) = source.downcast::<gst::Element>().unwrap().get() {
-                let appsrc = source
-                    .clone()
-                    .dynamic_cast::<gst_app::AppSrc>()
-                    .expect("Source element is expected to be an appsrc!");
-
-                appsrc.set_property_format(gst::Format::Bytes);
-                // appsrc.set_property_block(true);
-                if inner.input_size > 0 {
-                    appsrc.set_size(inner.input_size as i64);
-                }
-                inner.set_app_src(appsrc);
-            }
+            inner.start();
         }
     }
 
