@@ -176,20 +176,20 @@ impl Player {
         self.inner.lock().unwrap().register_event_handler(sender);
     }
 
-    pub fn set_input_size(&mut self, size: u64) {
+    pub fn set_input_size(&self, size: u64) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.set_input_size(size);
         }
     }
 
-    pub fn start(&mut self) {
+    pub fn start(&self) {
         let inner_clone = self.inner.clone();
         self.inner
             .lock()
             .unwrap()
             .player
             .connect_end_of_stream(move |_| {
-                let inner = Arc::clone(&inner_clone);
+                let inner = &inner_clone;
                 let guard = inner.lock().unwrap();
 
                 guard.notify(PlayerEvent::EndOfStream);
@@ -208,7 +208,7 @@ impl Player {
                     _ => None,
                 };
                 if let Some(v) = state {
-                    let inner = Arc::clone(&inner_clone);
+                    let inner = &inner_clone;
                     let guard = inner.lock().unwrap();
 
                     guard.notify(PlayerEvent::StateChanged(v));
@@ -221,7 +221,7 @@ impl Player {
             .unwrap()
             .player
             .connect_media_info_updated(move |_, info| {
-                let inner = Arc::clone(&inner_clone);
+                let inner = &inner_clone;
                 let guard = inner.lock().unwrap();
 
                 guard.notify(PlayerEvent::MetadataUpdated(media_info_to_metadata(info)));
@@ -286,11 +286,11 @@ impl Player {
         }
     }
 
-    pub fn play(&mut self) {
+    pub fn play(&self) {
         self.inner.lock().unwrap().play();
     }
 
-    pub fn stop(&mut self) {
+    pub fn stop(&self) {
         self.inner.lock().unwrap().stop();
     }
 
