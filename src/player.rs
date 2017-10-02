@@ -4,8 +4,8 @@ extern crate gstreamer_app as gst_app;
 extern crate gstreamer_player as gst_player;
 use self::glib::*;
 
-extern crate serde;
-extern crate serde_json;
+extern crate ipc_channel;
+use self::ipc_channel::ipc;
 
 use std::u64;
 use std::time;
@@ -19,7 +19,7 @@ struct PlayerInner {
     player: gst_player::Player,
     appsrc: Option<gst_app::AppSrc>,
     input_size: u64,
-    subscribers: Vec<Box<Fn(string::String) + Send>>,
+    subscribers: Vec<ipc::IpcSender<PlayerEvent>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -54,17 +54,14 @@ pub struct Player {
 }
 
 impl PlayerInner {
-    pub fn register_event_handler<F>(&mut self, callback: F)
-    where
-        F: 'static + Fn(string::String) + Send,
+    pub fn register_event_handler(&mut self, sender: ipc::IpcSender<PlayerEvent>)
     {
-        self.subscribers.push(Box::new(callback));
+        self.subscribers.push(sender);
     }
 
     pub fn notify(&self, event: PlayerEvent) {
-        let serialized = serde_json::to_string(&event).unwrap();
-        for callback in &self.subscribers {
-            callback(serialized.clone());
+        for sender in &self.subscribers {
+            sender.send(event.clone()).unwrap();
         }
     }
 
@@ -174,11 +171,9 @@ impl Player {
         }
     }
 
-    pub fn register_event_handler<F>(&mut self, callback: F)
-    where
-        F: 'static + Fn(string::String) + Send,
+    pub fn register_event_handler(&self, sender: ipc::IpcSender<PlayerEvent>)
     {
-        self.inner.lock().unwrap().register_event_handler(callback);
+        self.inner.lock().unwrap().register_event_handler(sender);
     }
 
     pub fn set_input_size(&mut self, size: u64) {
