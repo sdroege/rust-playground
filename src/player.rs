@@ -294,4 +294,13 @@ impl Player {
             return false;
         }
     }
+
+    pub fn end_of_stream(&self) -> bool {
+        if let Some(ref mut appsrc) = self.inner.lock().unwrap().appsrc {
+            return appsrc.end_of_stream() == gst::FlowReturn::Ok;
+        } else {
+            println!("the stream hasn't been initialized yet");
+            return false;
+        }
+    }
 }
