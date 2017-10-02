@@ -285,10 +285,9 @@ impl Player {
         self.inner.lock().unwrap().stop();
     }
 
-    pub fn push_data(&self, data: &[u8]) -> bool {
+    pub fn push_data(&self, data: Vec<u8>) -> bool {
         if let Some(ref mut appsrc) = self.inner.lock().unwrap().appsrc {
-            let v = Vec::from(data);
-            let buffer = gst::Buffer::from_vec(v).expect("Unable to create a Buffer");
+            let buffer = gst::Buffer::from_vec(data).expect("Unable to create a Buffer");
             return appsrc.push_buffer(buffer) == gst::FlowReturn::Ok;
         } else {
             println!("the stream hasn't been initialized yet");
