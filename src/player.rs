@@ -206,7 +206,7 @@ impl Player {
             .lock()
             .unwrap()
             .player
-            .connect_error(move |_, err| {
+            .connect_error(move |_, _| {
                 let inner = &inner_clone;
                 let guard = inner.lock().unwrap();
 
@@ -295,14 +295,23 @@ impl Player {
                         }
 
                         let sender_clone = sender.clone();
-                        appsrc.connect("need-data", false, move |_| {
-                            sender_clone.lock().unwrap().send(Ok(())).unwrap();
+
+                        let need_data_id = Arc::new(Mutex::new(None));
+                        let need_data_id_clone = need_data_id.clone();
+                        appsrc.connect("need-data", false, move |args| {
+                            let _ = sender_clone.lock().unwrap().send(Ok(()));
+                            if let Some(id) = need_data_id_clone.lock().unwrap().take() {
+                                glib::signal::signal_handler_disconnect(
+                                    &args[0].get::<gst::Element>().unwrap(),
+                                    id,
+                                );
+                            }
                             None
                         }).unwrap();
 
                         inner.set_app_src(appsrc);
                     } else {
-                        sender.lock().unwrap().send(Err(())).unwrap();
+                        let _ = sender.lock().unwrap().send(Err(()));
                     }
 
                     None
@@ -310,7 +319,7 @@ impl Player {
                 .unwrap();
 
             let error_id = inner.player.connect_error(move |_, _| {
-                sender_clone.lock().unwrap().send(Err(())).unwrap();
+                let _ = sender_clone.lock().unwrap().send(Err(()));
             });
 
             inner.start();
