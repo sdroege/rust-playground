@@ -8,6 +8,8 @@ use std::io::prelude::*;
 use std::path::Path;
 use std::io::BufReader;
 use std::thread;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ipc_channel::ipc;
 
@@ -42,11 +44,13 @@ fn main() {
     }
 
     let p_clone = p.clone();
-    thread::spawn(move || {
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_clone = shutdown.clone();
+    let t = thread::spawn(move || {
         let p = &p_clone;
         let mut buf_reader = BufReader::new(file);
         let mut buffer = [0; 8192];
-        loop {
+        while !shutdown_clone.load(Ordering::Relaxed) {
             match buf_reader.read(&mut buffer[..]) {
                 Ok(0) => {
                     println!("finished pushing data");
@@ -85,6 +89,9 @@ fn main() {
             }
         }
     }
+
+    shutdown.store(true, Ordering::Relaxed);
+    let _ = t.join();
 
     p.stop();
 }
