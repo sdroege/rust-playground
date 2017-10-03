@@ -1,5 +1,5 @@
 extern crate playground;
-extern crate serde_json;
+extern crate ipc_channel;
 
 use std::env;
 use std::error::Error;
@@ -7,8 +7,11 @@ use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
 use std::io::BufReader;
-use std::{thread, time};
-use std::sync::{Arc, Mutex};
+use std::thread;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use ipc_channel::ipc;
 
 fn main() {
     let args: Vec<_> = env::args().collect();
@@ -19,26 +22,10 @@ fn main() {
     };
 
     playground::initialize();
-    let mut p = playground::player::Player::new();
+    let p = playground::player::Player::new();
 
-    let end_of_stream = Arc::new(Mutex::new(false));
-    let inner_eos = end_of_stream.clone();
-    p.register_event_handler(move |payload| {
-        let event: playground::player::PlayerEvent = serde_json::from_str(&payload).unwrap();
-        match event {
-            playground::player::PlayerEvent::EndOfStream => {
-                let inner = Arc::clone(&inner_eos);
-                let mut eos_guard = inner.lock().unwrap();
-                *eos_guard = true;
-            }
-            playground::player::PlayerEvent::MetadataUpdated(ref m) => {
-                println!("Metadata updated! {:?}", m);
-            }
-            playground::player::PlayerEvent::StateChanged(ref s) => {
-                println!("State changed to {:?}", s);
-            }
-        }
-    });
+    let (sender, receiver) = ipc::channel().unwrap();
+    p.register_event_handler(sender);
 
     let path = Path::new(filename);
     let display = path.display();
@@ -51,25 +38,60 @@ fn main() {
     if let Ok(metadata) = file.metadata() {
         p.set_input_size(metadata.len());
     }
-    p.start();
-    p.play();
 
-    let mut buf_reader = BufReader::new(file);
-    while !*end_of_stream.lock().unwrap() {
+    if !p.start() {
+        panic!("couldn't start");
+    }
+
+    let p_clone = p.clone();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_clone = shutdown.clone();
+    let t = thread::spawn(move || {
+        let p = &p_clone;
+        let mut buf_reader = BufReader::new(file);
         let mut buffer = [0; 8192];
-        match buf_reader.read(&mut buffer[..]) {
-            Ok(size) => if size > 0 {
-                if !p.push_data(&buffer) {
+        while !shutdown_clone.load(Ordering::Relaxed) {
+            match buf_reader.read(&mut buffer[..]) {
+                Ok(0) => {
+                    println!("finished pushing data");
                     break;
                 }
-            } else {
-                thread::sleep(time::Duration::from_millis(200));
-            },
-            Err(e) => {
-                eprintln!("Error: {}", e);
+                Ok(size) => {
+                    if !p.push_data(Vec::from(&buffer[0..size])) {
+                        break;
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    break;
+                }
+            }
+        }
+    });
+
+    p.play();
+
+    while let Ok(event) = receiver.recv() {
+        match event {
+            playground::player::PlayerEvent::EndOfStream => {
+                println!("EOF");
                 break;
+            }
+            playground::player::PlayerEvent::Error => {
+                println!("Error");
+                break;
+            }
+            playground::player::PlayerEvent::MetadataUpdated(ref m) => {
+                println!("Metadata updated! {:?}", m);
+            }
+            playground::player::PlayerEvent::StateChanged(ref s) => {
+                println!("State changed to {:?}", s);
             }
         }
     }
+
+    shutdown.store(true, Ordering::Relaxed);
+    let _ = t.join();
+
     p.stop();
 }

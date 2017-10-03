@@ -4,13 +4,14 @@ extern crate gstreamer_app as gst_app;
 extern crate gstreamer_player as gst_player;
 use self::glib::*;
 
-extern crate serde;
-extern crate serde_json;
+extern crate ipc_channel;
+use self::ipc_channel::ipc;
 
 use std::u64;
 use std::time;
 use std::string;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
+use std::sync::mpsc;
 
 use self::gst_player::PlayerMediaInfo;
 use self::gst_player::PlayerStreamInfoExt;
@@ -19,10 +20,11 @@ struct PlayerInner {
     player: gst_player::Player,
     appsrc: Option<gst_app::AppSrc>,
     input_size: u64,
-    subscribers: Vec<Box<Fn(string::String) + Send>>,
+    subscribers: Vec<ipc::IpcSender<PlayerEvent>>,
+    last_metadata: Option<Metadata>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Metadata {
     pub duration: Option<time::Duration>,
     pub width: u32,
@@ -46,6 +48,7 @@ pub enum PlayerEvent {
     EndOfStream,
     MetadataUpdated(Metadata),
     StateChanged(PlaybackState),
+    Error,
 }
 
 #[derive(Clone)]
@@ -54,17 +57,14 @@ pub struct Player {
 }
 
 impl PlayerInner {
-    pub fn register_event_handler<F>(&mut self, callback: F)
-    where
-        F: 'static + Fn(string::String) + Send,
+    pub fn register_event_handler(&mut self, sender: ipc::IpcSender<PlayerEvent>)
     {
-        self.subscribers.push(Box::new(callback));
+        self.subscribers.push(sender);
     }
 
     pub fn notify(&self, event: PlayerEvent) {
-        let serialized = serde_json::to_string(&event).unwrap();
-        for callback in &self.subscribers {
-            callback(serialized.clone());
+        for sender in &self.subscribers {
+            sender.send(event.clone()).unwrap();
         }
     }
 
@@ -78,6 +78,8 @@ impl PlayerInner {
 
     pub fn stop(&mut self) {
         self.player.stop();
+        self.last_metadata = None;
+        self.appsrc = None;
     }
 
     pub fn start(&mut self) {
@@ -170,34 +172,45 @@ impl Player {
                 appsrc: None,
                 input_size: 0,
                 subscribers: Vec::new(),
+                last_metadata: None,
             })),
         }
     }
 
-    pub fn register_event_handler<F>(&mut self, callback: F)
-    where
-        F: 'static + Fn(string::String) + Send,
+    pub fn register_event_handler(&self, sender: ipc::IpcSender<PlayerEvent>)
     {
-        self.inner.lock().unwrap().register_event_handler(callback);
+        self.inner.lock().unwrap().register_event_handler(sender);
     }
 
-    pub fn set_input_size(&mut self, size: u64) {
+    pub fn set_input_size(&self, size: u64) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.set_input_size(size);
         }
     }
 
-    pub fn start(&mut self) {
+    pub fn start(&self) -> bool {
         let inner_clone = self.inner.clone();
         self.inner
             .lock()
             .unwrap()
             .player
             .connect_end_of_stream(move |_| {
-                let inner = Arc::clone(&inner_clone);
+                let inner = &inner_clone;
                 let guard = inner.lock().unwrap();
 
                 guard.notify(PlayerEvent::EndOfStream);
+            });
+
+        let inner_clone = self.inner.clone();
+        self.inner
+            .lock()
+            .unwrap()
+            .player
+            .connect_error(move |_, err| {
+                let inner = &inner_clone;
+                let guard = inner.lock().unwrap();
+
+                guard.notify(PlayerEvent::Error);
             });
 
         let inner_clone = self.inner.clone();
@@ -213,7 +226,7 @@ impl Player {
                     _ => None,
                 };
                 if let Some(v) = state {
-                    let inner = Arc::clone(&inner_clone);
+                    let inner = &inner_clone;
                     let guard = inner.lock().unwrap();
 
                     guard.notify(PlayerEvent::StateChanged(v));
@@ -226,10 +239,14 @@ impl Player {
             .unwrap()
             .player
             .connect_media_info_updated(move |_, info| {
-                let inner = Arc::clone(&inner_clone);
-                let guard = inner.lock().unwrap();
+                let inner = &inner_clone;
+                let mut guard = inner.lock().unwrap();
 
-                guard.notify(PlayerEvent::MetadataUpdated(media_info_to_metadata(info)));
+                let metadata = media_info_to_metadata(info);
+                if guard.last_metadata.as_ref() != Some(&metadata) {
+                    guard.last_metadata = Some(metadata.clone());
+                    guard.notify(PlayerEvent::MetadataUpdated(metadata));
+                }
             });
 
         self.inner
@@ -252,58 +269,90 @@ impl Player {
                 );
             });
 
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.start();
+        let inner_clone = self.inner.clone();
+        let (receiver, error_id) = {
+            let mut inner = self.inner.lock().unwrap();
             let pipeline = inner.player.get_pipeline().unwrap();
-            let pair = Arc::new((Mutex::new(false), Condvar::new()));
-            let pair2 = pair.clone();
 
+            let (sender, receiver) = mpsc::channel();
+
+            let sender = Arc::new(Mutex::new(sender));
+            let sender_clone = sender.clone();
             pipeline
-                .connect("source-setup", false, move |_| {
-                    let &(ref lock, ref cvar) = &*pair2;
-                    let mut started = lock.lock().unwrap();
-                    *started = true;
-                    cvar.notify_one();
+                .connect("source-setup", false, move |args| {
+                    let mut inner = inner_clone.lock().unwrap();
+
+                    if let Some(source) = args[1].get::<gst::Element>() {
+                        let appsrc = source
+                            .clone()
+                            .dynamic_cast::<gst_app::AppSrc>()
+                            .expect("Source element is expected to be an appsrc!");
+
+                        appsrc.set_property_format(gst::Format::Bytes);
+                        // appsrc.set_property_block(true);
+                        if inner.input_size > 0 {
+                            appsrc.set_size(inner.input_size as i64);
+                        }
+
+                        let sender_clone = sender.clone();
+                        appsrc.connect("need-data", false, move |_| {
+                            sender_clone.lock().unwrap().send(Ok(())).unwrap();
+                            None
+                        }).unwrap();
+
+                        inner.set_app_src(appsrc);
+                    } else {
+                        sender.lock().unwrap().send(Err(())).unwrap();
+                    }
+
                     None
                 })
                 .unwrap();
 
-            let &(ref lock, ref cvar) = &*pair;
-            let mut started = lock.lock().unwrap();
-            while !*started {
-                started = cvar.wait(started).unwrap();
-            }
+            let error_id = inner.player.connect_error(move |_, _| {
+                sender_clone.lock().unwrap().send(Err(())).unwrap();
+            });
 
-            let source = pipeline.get_property("source").unwrap();
-            if let Some(source) = source.downcast::<gst::Element>().unwrap().get() {
-                let appsrc = source
-                    .clone()
-                    .dynamic_cast::<gst_app::AppSrc>()
-                    .expect("Source element is expected to be an appsrc!");
+            inner.start();
 
-                appsrc.set_property_format(gst::Format::Bytes);
-                // appsrc.set_property_block(true);
-                if inner.input_size > 0 {
-                    appsrc.set_size(inner.input_size as i64);
-                }
-                inner.set_app_src(appsrc);
-            }
-        }
+            (receiver, error_id)
+        };
+
+        let res = match receiver.recv().unwrap() {
+            Ok(_) => {
+                true
+            },
+            Err(_) => {
+                false
+            },
+        };
+
+        glib::signal::signal_handler_disconnect(&self.inner.lock().unwrap().player, error_id);
+
+        res
     }
 
-    pub fn play(&mut self) {
+    pub fn play(&self) {
         self.inner.lock().unwrap().play();
     }
 
-    pub fn stop(&mut self) {
+    pub fn stop(&self) {
         self.inner.lock().unwrap().stop();
     }
 
-    pub fn push_data(&self, data: &[u8]) -> bool {
+    pub fn push_data(&self, data: Vec<u8>) -> bool {
         if let Some(ref mut appsrc) = self.inner.lock().unwrap().appsrc {
-            let v = Vec::from(data);
-            let buffer = gst::Buffer::from_vec(v).expect("Unable to create a Buffer");
+            let buffer = gst::Buffer::from_vec(data).expect("Unable to create a Buffer");
             return appsrc.push_buffer(buffer) == gst::FlowReturn::Ok;
+        } else {
+            println!("the stream hasn't been initialized yet");
+            return false;
+        }
+    }
+
+    pub fn end_of_stream(&self) -> bool {
+        if let Some(ref mut appsrc) = self.inner.lock().unwrap().appsrc {
+            return appsrc.end_of_stream() == gst::FlowReturn::Ok;
         } else {
             println!("the stream hasn't been initialized yet");
             return false;
