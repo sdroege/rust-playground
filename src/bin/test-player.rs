@@ -70,6 +70,10 @@ fn main() {
                 println!("EOF");
                 break;
             }
+            playground::player::PlayerEvent::Error => {
+                println!("Error");
+                break;
+            }
             playground::player::PlayerEvent::MetadataUpdated(ref m) => {
                 println!("Metadata updated! {:?}", m);
             }

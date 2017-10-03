@@ -48,6 +48,7 @@ pub enum PlayerEvent {
     EndOfStream,
     MetadataUpdated(Metadata),
     StateChanged(PlaybackState),
+    Error,
 }
 
 #[derive(Clone)]
@@ -198,6 +199,18 @@ impl Player {
                 let guard = inner.lock().unwrap();
 
                 guard.notify(PlayerEvent::EndOfStream);
+            });
+
+        let inner_clone = self.inner.clone();
+        self.inner
+            .lock()
+            .unwrap()
+            .player
+            .connect_error(move |_, err| {
+                let inner = &inner_clone;
+                let guard = inner.lock().unwrap();
+
+                guard.notify(PlayerEvent::Error);
             });
 
         let inner_clone = self.inner.clone();
