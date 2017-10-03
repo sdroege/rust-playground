@@ -11,6 +11,7 @@ use std::u64;
 use std::time;
 use std::string;
 use std::sync::{Arc, Mutex};
+use std::sync::mpsc;
 
 use self::gst_player::PlayerMediaInfo;
 use self::gst_player::PlayerStreamInfoExt;
@@ -186,7 +187,7 @@ impl Player {
         }
     }
 
-    pub fn start(&self) {
+    pub fn start(&self) -> bool {
         let inner_clone = self.inner.clone();
         self.inner
             .lock()
@@ -256,9 +257,14 @@ impl Player {
             });
 
         let inner_clone = self.inner.clone();
-        if let Ok(mut inner) = self.inner.lock() {
+        let (receiver, error_id) = {
+            let mut inner = self.inner.lock().unwrap();
             let pipeline = inner.player.get_pipeline().unwrap();
 
+            let (sender, receiver) = mpsc::channel();
+
+            let sender = Arc::new(Mutex::new(sender));
+            let sender_clone = sender.clone();
             pipeline
                 .connect("source-setup", false, move |args| {
                     let mut inner = inner_clone.lock().unwrap();
@@ -274,15 +280,43 @@ impl Player {
                         if inner.input_size > 0 {
                             appsrc.set_size(inner.input_size as i64);
                         }
+
+                        let sender_clone = sender.clone();
+                        appsrc.connect("need-data", false, move |_| {
+                            sender_clone.lock().unwrap().send(Ok(())).unwrap();
+                            None
+                        }).unwrap();
+
                         inner.set_app_src(appsrc);
+                    } else {
+                        sender.lock().unwrap().send(Err(())).unwrap();
                     }
 
                     None
                 })
                 .unwrap();
 
+            let error_id = inner.player.connect_error(move |_, _| {
+                sender_clone.lock().unwrap().send(Err(())).unwrap();
+            });
+
             inner.start();
-        }
+
+            (receiver, error_id)
+        };
+
+        let res = match receiver.recv().unwrap() {
+            Ok(_) => {
+                true
+            },
+            Err(_) => {
+                false
+            },
+        };
+
+        glib::signal::signal_handler_disconnect(&self.inner.lock().unwrap().player, error_id);
+
+        res
     }
 
     pub fn play(&self) {
