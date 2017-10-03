@@ -36,7 +36,10 @@ fn main() {
     if let Ok(metadata) = file.metadata() {
         p.set_input_size(metadata.len());
     }
-    p.start();
+
+    if !p.start() {
+        panic!("couldn't start");
+    }
 
     let p_clone = p.clone();
     thread::spawn(move || {
