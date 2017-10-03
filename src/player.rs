@@ -20,9 +20,10 @@ struct PlayerInner {
     appsrc: Option<gst_app::AppSrc>,
     input_size: u64,
     subscribers: Vec<ipc::IpcSender<PlayerEvent>>,
+    last_metadata: Option<Metadata>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Metadata {
     pub duration: Option<time::Duration>,
     pub width: u32,
@@ -75,6 +76,8 @@ impl PlayerInner {
 
     pub fn stop(&mut self) {
         self.player.stop();
+        self.last_metadata = None;
+        self.appsrc = None;
     }
 
     pub fn start(&mut self) {
@@ -167,6 +170,7 @@ impl Player {
                 appsrc: None,
                 input_size: 0,
                 subscribers: Vec::new(),
+                last_metadata: None,
             })),
         }
     }
@@ -222,9 +226,13 @@ impl Player {
             .player
             .connect_media_info_updated(move |_, info| {
                 let inner = &inner_clone;
-                let guard = inner.lock().unwrap();
+                let mut guard = inner.lock().unwrap();
 
-                guard.notify(PlayerEvent::MetadataUpdated(media_info_to_metadata(info)));
+                let metadata = media_info_to_metadata(info);
+                if guard.last_metadata.as_ref() != Some(&metadata) {
+                    guard.last_metadata = Some(metadata.clone());
+                    guard.notify(PlayerEvent::MetadataUpdated(metadata));
+                }
             });
 
         self.inner
