@@ -19,8 +19,10 @@ use self::gst_player::PlayerStreamInfoExt;
 struct PlayerInner {
     player: gst_player::Player,
     appsrc: Option<gst_app::AppSrc>,
+    appsink: gst_app::AppSink,
     input_size: u64,
     subscribers: Vec<ipc::IpcSender<PlayerEvent>>,
+    renderers: Vec<Box<FrameRenderer>>,
     last_metadata: Option<Metadata>,
 }
 
@@ -48,7 +50,54 @@ pub enum PlayerEvent {
     EndOfStream,
     MetadataUpdated(Metadata),
     StateChanged(PlaybackState),
+    FrameUpdated,
     Error,
+}
+
+#[derive(Clone)]
+pub struct Frame {
+    width: i32,
+    height: i32,
+    // TODO:
+    // buffer: gst::Buffer
+
+    // width * height * 4
+    data: Arc<Vec<u8>>,
+}
+
+impl Frame {
+    fn new(sample: &gst::Sample) -> Frame {
+        let caps = sample.get_caps().unwrap();
+        let s = caps.get_structure(0).unwrap();
+        let width = s.get("width").unwrap();
+        let height = s.get("height").unwrap();
+        let buffer = sample.get_buffer().unwrap();
+
+        let map = buffer.map_readable().unwrap();
+        let data = Vec::from(map.as_slice());
+
+        Frame {
+            width: width,
+            height: height,
+            data: Arc::new(data),
+        }
+    }
+
+    pub fn get_width(&self) -> i32 {
+        self.width
+    }
+
+    pub fn get_height(&self) -> i32 {
+        self.height
+    }
+
+    pub fn get_data(&self) -> &Arc<Vec<u8>> {
+        &self.data
+    }
+}
+
+pub trait FrameRenderer: Send + Sync + 'static {
+    fn render(&self, frame: Frame);
 }
 
 #[derive(Clone)]
@@ -57,15 +106,27 @@ pub struct Player {
 }
 
 impl PlayerInner {
-    pub fn register_event_handler(&mut self, sender: ipc::IpcSender<PlayerEvent>)
-    {
+    pub fn register_event_handler(&mut self, sender: ipc::IpcSender<PlayerEvent>) {
         self.subscribers.push(sender);
+    }
+
+    pub fn register_frame_renderer(&mut self, renderer: Box<FrameRenderer>) {
+        self.renderers.push(renderer);
     }
 
     pub fn notify(&self, event: PlayerEvent) {
         for sender in &self.subscribers {
             sender.send(event.clone()).unwrap();
         }
+    }
+
+    pub fn render(&self, sample: &gst::Sample) {
+        let frame = Frame::new(&sample);
+
+        for renderer in &self.renderers {
+            renderer.render(frame.clone());
+        }
+        self.notify(PlayerEvent::FrameUpdated);
     }
 
     pub fn set_input_size(&mut self, size: u64) {
@@ -152,6 +213,7 @@ impl Player {
         let config = gst::Structure::new("config", &[("position-interval-update", &0u32)]);
         player.set_config(config);
 
+        /*
         #[cfg(target_os = "macos")]
         {
             // FIXME: glimagesink can't be used because:
@@ -165,13 +227,27 @@ impl Player {
                     .expect("Can't set video sink property");
             }
         }
+        */
+        let video_sink = gst::ElementFactory::make("appsink", None).unwrap();
+        let pipeline = player.get_pipeline().unwrap();
+        pipeline.set_property("video-sink", &video_sink).unwrap();
+        let video_sink = video_sink.dynamic_cast::<gst_app::AppSink>().unwrap();
+        video_sink.set_caps(&gst::Caps::new_simple(
+            "video/x-raw",
+            &[
+                ("format", &"BGRA"),
+                ("pixel-aspect-ratio", &gst::Fraction::from((1, 1))),
+            ]
+        ));
 
         Player {
             inner: Arc::new(Mutex::new(PlayerInner {
                 player: player,
                 appsrc: None,
+                appsink: video_sink,
                 input_size: 0,
                 subscribers: Vec::new(),
+                renderers: Vec::new(),
                 last_metadata: None,
             })),
         }
@@ -180,6 +256,10 @@ impl Player {
     pub fn register_event_handler(&self, sender: ipc::IpcSender<PlayerEvent>)
     {
         self.inner.lock().unwrap().register_event_handler(sender);
+    }
+
+    pub fn register_frame_renderer<R: FrameRenderer>(&self, renderer: R) {
+        self.inner.lock().unwrap().register_frame_renderer(Box::new(renderer));
     }
 
     pub fn set_input_size(&self, size: u64) {
@@ -268,6 +348,29 @@ impl Player {
                     seconds
                 );
             });
+
+        let inner_clone = self.inner.clone();
+        self.inner
+            .lock()
+            .unwrap()
+            .appsink
+            .set_callbacks(gst_app::AppSinkCallbacks::new(
+            /* eos */
+            |_| {},
+            /* new_preroll */
+            |_| gst::FlowReturn::Ok,
+            /* new_samples */
+            move |appsink| {
+                let sample = match appsink.pull_sample() {
+                    None => return gst::FlowReturn::Eos,
+                    Some(sample) => sample,
+                };
+
+                inner_clone.lock().unwrap().render(&sample);
+
+                gst::FlowReturn::Ok
+            }
+        ));
 
         let inner_clone = self.inner.clone();
         let (receiver, error_id) = {
