@@ -87,6 +87,8 @@ fn main() {
             playground::player::PlayerEvent::StateChanged(ref s) => {
                 println!("State changed to {:?}", s);
             }
+            playground::player::PlayerEvent::FrameUpdated => {
+            }
         }
     }
 

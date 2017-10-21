@@ -213,24 +213,9 @@ impl Player {
         let config = gst::Structure::new("config", &[("position-interval-update", &0u32)]);
         player.set_config(config);
 
-        /*
-        #[cfg(target_os = "macos")]
-        {
-            // FIXME: glimagesink can't be used because:
-            // 1. test-player isn't a Cocoa app running a NSApplication
-            // 2. the GstGLDisplayCocoa depends on a main GLib loop in that case ^^ which test-player
-            // is not using
-            let pipeline = player.get_pipeline().unwrap();
-            if let Some(sink) = gst::ElementFactory::make("osxvideosink", None) {
-                pipeline
-                    .set_property("video-sink", &sink.to_value())
-                    .expect("Can't set video sink property");
-            }
-        }
-        */
         let video_sink = gst::ElementFactory::make("appsink", None).unwrap();
         let pipeline = player.get_pipeline().unwrap();
-        pipeline.set_property("video-sink", &video_sink).unwrap();
+        pipeline.set_property("video-sink", &video_sink.to_value()).unwrap();
         let video_sink = video_sink.dynamic_cast::<gst_app::AppSink>().unwrap();
         video_sink.set_caps(&gst::Caps::new_simple(
             "video/x-raw",
