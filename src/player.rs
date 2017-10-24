@@ -386,7 +386,7 @@ impl Player {
 
                         let need_data_id = Arc::new(Mutex::new(None));
                         let need_data_id_clone = need_data_id.clone();
-                        appsrc.connect("need-data", false, move |args| {
+                        *need_data_id.lock().unwrap() = Some(appsrc.connect("need-data", false, move |args| {
                             let _ = sender_clone.lock().unwrap().send(Ok(()));
                             if let Some(id) = need_data_id_clone.lock().unwrap().take() {
                                 glib::signal::signal_handler_disconnect(
@@ -395,7 +395,7 @@ impl Player {
                                 );
                             }
                             None
-                        }).unwrap();
+                        }).unwrap());
 
                         inner.set_app_src(appsrc);
                     } else {
