@@ -222,7 +222,7 @@ impl Player {
             &[
                 ("format", &"BGRA"),
                 ("pixel-aspect-ratio", &gst::Fraction::from((1, 1))),
-            ]
+            ],
         ));
 
         Player {
@@ -238,13 +238,15 @@ impl Player {
         }
     }
 
-    pub fn register_event_handler(&self, sender: ipc::IpcSender<PlayerEvent>)
-    {
+    pub fn register_event_handler(&self, sender: ipc::IpcSender<PlayerEvent>) {
         self.inner.lock().unwrap().register_event_handler(sender);
     }
 
     pub fn register_frame_renderer<R: FrameRenderer>(&self, renderer: R) {
-        self.inner.lock().unwrap().register_frame_renderer(Box::new(renderer));
+        self.inner
+            .lock()
+            .unwrap()
+            .register_frame_renderer(Box::new(renderer));
     }
 
     pub fn set_input_size(&self, size: u64) {
@@ -340,22 +342,22 @@ impl Player {
             .unwrap()
             .appsink
             .set_callbacks(gst_app::AppSinkCallbacks::new(
-            /* eos */
-            |_| {},
-            /* new_preroll */
-            |_| gst::FlowReturn::Ok,
-            /* new_samples */
-            move |appsink| {
-                let sample = match appsink.pull_sample() {
-                    None => return gst::FlowReturn::Eos,
-                    Some(sample) => sample,
-                };
+                /* eos */
+                |_| {},
+                /* new_preroll */
+                |_| gst::FlowReturn::Ok,
+                /* new_samples */
+                move |appsink| {
+                    let sample = match appsink.pull_sample() {
+                        None => return gst::FlowReturn::Eos,
+                        Some(sample) => sample,
+                    };
 
-                inner_clone.lock().unwrap().render(&sample);
+                    inner_clone.lock().unwrap().render(&sample);
 
-                gst::FlowReturn::Ok
-            }
-        ));
+                    gst::FlowReturn::Ok
+                },
+            ));
 
         let inner_clone = self.inner.clone();
         let (receiver, error_id) = {
@@ -386,16 +388,20 @@ impl Player {
 
                         let need_data_id = Arc::new(Mutex::new(None));
                         let need_data_id_clone = need_data_id.clone();
-                        *need_data_id.lock().unwrap() = Some(appsrc.connect("need-data", false, move |args| {
-                            let _ = sender_clone.lock().unwrap().send(Ok(()));
-                            if let Some(id) = need_data_id_clone.lock().unwrap().take() {
-                                glib::signal::signal_handler_disconnect(
-                                    &args[0].get::<gst::Element>().unwrap(),
-                                    id,
-                                );
-                            }
-                            None
-                        }).unwrap());
+                        *need_data_id.lock().unwrap() = Some(
+                            appsrc
+                                .connect("need-data", false, move |args| {
+                                    let _ = sender_clone.lock().unwrap().send(Ok(()));
+                                    if let Some(id) = need_data_id_clone.lock().unwrap().take() {
+                                        glib::signal::signal_handler_disconnect(
+                                            &args[0].get::<gst::Element>().unwrap(),
+                                            id,
+                                        );
+                                    }
+                                    None
+                                })
+                                .unwrap(),
+                        );
 
                         inner.set_app_src(appsrc);
                     } else {
@@ -416,12 +422,8 @@ impl Player {
         };
 
         let res = match receiver.recv().unwrap() {
-            Ok(_) => {
-                true
-            },
-            Err(_) => {
-                false
-            },
+            Ok(_) => true,
+            Err(_) => false,
         };
 
         glib::signal::signal_handler_disconnect(&self.inner.lock().unwrap().player, error_id);

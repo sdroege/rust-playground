@@ -1,5 +1,5 @@
-extern crate playground;
 extern crate ipc_channel;
+extern crate playground;
 
 use std::env;
 use std::error::Error;
@@ -56,10 +56,8 @@ fn main() {
                     println!("finished pushing data");
                     break;
                 }
-                Ok(size) => {
-                    if !p.push_data(Vec::from(&buffer[0..size])) {
-                        break;
-                    }
+                Ok(size) => if !p.push_data(Vec::from(&buffer[0..size])) {
+                    break;
                 },
                 Err(e) => {
                     eprintln!("Error: {}", e);
