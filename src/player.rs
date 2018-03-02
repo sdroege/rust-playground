@@ -153,15 +153,12 @@ impl PlayerInner {
 }
 
 pub fn media_info_to_metadata(media_info: &PlayerMediaInfo) -> Metadata {
-    let dur = media_info.get_duration();
-    let duration = if dur != u64::MAX {
+    let duration = media_info.get_duration().map_or(None, |dur| {
         let secs = dur / 1_000_000_000;
         let nanos = dur % 1_000_000_000;
 
         Some(time::Duration::new(secs, nanos as u32))
-    } else {
-        None
-    };
+    });
 
     let mut format = string::String::from("");
     let mut audio_tracks = Vec::new();
@@ -171,16 +168,14 @@ pub fn media_info_to_metadata(media_info: &PlayerMediaInfo) -> Metadata {
     }
 
     for stream_info in media_info.get_stream_list() {
-        if let Some(stream_type) = stream_info.get_stream_type() {
-            match stream_type.as_str() {
-                "audio" => {
-                    audio_tracks.push(stream_info.get_codec().unwrap());
-                }
-                "video" => {
-                    video_tracks.push(stream_info.get_codec().unwrap());
-                }
-                _ => {}
+        match stream_info.get_stream_type().as_str() {
+            "audio" => {
+                audio_tracks.push(stream_info.get_codec().unwrap());
             }
+            "video" => {
+                video_tracks.push(stream_info.get_codec().unwrap());
+            }
+            _ => {}
         }
     }
 
@@ -210,11 +205,12 @@ impl Player {
             .expect("Can't set uri property");
 
         // Disable periodic position updates for now.
-        let config = gst::Structure::new("config", &[("position-interval-update", &0u32)]);
-        player.set_config(config);
+        let mut config = player.get_config();
+        config.set_position_update_interval(0u32);
+        let _ = player.set_config(config);
 
         let video_sink = gst::ElementFactory::make("appsink", None).unwrap();
-        let pipeline = player.get_pipeline().unwrap();
+        let pipeline = player.get_pipeline();
         pipeline.set_property("video-sink", &video_sink.to_value()).unwrap();
         let video_sink = video_sink.dynamic_cast::<gst_app::AppSink>().unwrap();
         video_sink.set_caps(&gst::Caps::new_simple(
@@ -341,28 +337,21 @@ impl Player {
             .lock()
             .unwrap()
             .appsink
-            .set_callbacks(gst_app::AppSinkCallbacks::new(
-                /* eos */
-                |_| {},
-                /* new_preroll */
-                |_| gst::FlowReturn::Ok,
-                /* new_samples */
-                move |appsink| {
-                    let sample = match appsink.pull_sample() {
-                        None => return gst::FlowReturn::Eos,
-                        Some(sample) => sample,
-                    };
+            .set_callbacks(gst_app::AppSinkCallbacks::new().new_sample(move |appsink| {
+                let sample = match appsink.pull_sample() {
+                    None => return gst::FlowReturn::Eos,
+                    Some(sample) => sample,
+                };
 
-                    inner_clone.lock().unwrap().render(&sample);
+                inner_clone.lock().unwrap().render(&sample);
 
-                    gst::FlowReturn::Ok
-                },
-            ));
+                gst::FlowReturn::Ok
+            }).build());
 
         let inner_clone = self.inner.clone();
         let (receiver, error_id) = {
             let mut inner = self.inner.lock().unwrap();
-            let pipeline = inner.player.get_pipeline().unwrap();
+            let pipeline = inner.player.get_pipeline();
 
             let (sender, receiver) = mpsc::channel();
 
@@ -441,7 +430,7 @@ impl Player {
 
     pub fn push_data(&self, data: Vec<u8>) -> bool {
         if let Some(ref mut appsrc) = self.inner.lock().unwrap().appsrc {
-            let buffer = gst::Buffer::from_vec(data).expect("Unable to create a Buffer");
+            let buffer = gst::Buffer::from_slice(data).expect("Unable to create a Buffer");
             return appsrc.push_buffer(buffer) == gst::FlowReturn::Ok;
         } else {
             println!("the stream hasn't been initialized yet");
